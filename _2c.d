@@ -283,10 +283,13 @@ public:
 }
 class CCaseStatement : CLabelStatement
 {
+    CExpression expr;
+
 public:
-    this(CValueExpression n, CStatement l)
+    this(CExpression e, CStatement l)
     {
-        super(n.toString(0), l);
+        expr = e;
+        super(e.toString(0), l);
     }
     override string toString(uint indent)
     {
