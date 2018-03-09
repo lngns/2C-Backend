@@ -205,4 +205,16 @@ void main()
 
     writeln("\r\nOptimized Code:\r\n");
     writeln(m.toString());
+
+    writeln("\r\n\r\n-----------\r\n");
+
+    CModule m2 = new CModule("DeclarationTest", &CGCCAttributeEmitter);
+    m2 ~= new CVariableDeclaration(new CBasicType(CBType.UInt), "foo");
+
+    auto func = new CFunction!void("func");
+    func ~= new CDeclarationStatement(new CConstantDeclaration(new CBasicType(CBType.ULongLong), "bar", null, CStorageClass.Static));
+
+    m2 ~= func;
+    writeln(m2);
 }
+

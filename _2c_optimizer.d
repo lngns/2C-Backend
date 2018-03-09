@@ -109,7 +109,7 @@ int evalArithmetic(CExpression e)
         {
             switch(expr.operator)
             {
-            static foreach(op; ["+", "-", "*", "/", "%", "&", "|", "^", "&&", "||", "==", "!=", "<<", ">>"])
+            static foreach(op; ["+", "-", "*", "/", "%", "&", "|", "^", "&&", "||", "<", "<=", ">", ">=", "==", "!=", "<<", ">>"])
                 case op: mixin("return lhs " ~ op ~ " rhs;");
             default: break;
             }
@@ -211,26 +211,52 @@ CStatement eliminateDeadCode(CStatement s)
 }
 CFunction!(Ts) eliminateDeadCode(Ts...)(CFunction!(Ts) func)
 {
+    CStatement[] newbody;
     foreach(i, stmt; func.body)
     {
         auto optimized = eliminateDeadCode(stmt);
         if(optimized !is null)
-            func.body[i] = optimized;
+            newbody ~= optimized;
     }
+    func.body = newbody;
     return func;
 }
 
 CStatement resolveArithmetic(CStatement s)
 {
-    if(auto stmt = cast(CExpressionStatement) s)
+    try
     {
-        try
+        if(auto stmt = cast(CExpressionStatement) s)
         {
             int result = evalArithmetic(stmt.expr);
             stmt.expr = new CValueExpression(result);
         }
-        catch(CEvalException) {}
+        else if(auto stmt = cast(CBlockStatement) s)
+        {
+            foreach(i, substmt; stmt.body)
+                stmt.body[i] = resolveArithmetic(substmt);
+        }
+        else if(auto stmt = cast(CIfStatement) s)
+        {
+            int result = evalArithmetic(stmt.test);
+            stmt.test = new CValueExpression(result);
+        }
+        else if(auto stmt = cast(CWhileStatement) s)
+        {
+            int result = evalArithmetic(stmt.test);
+            stmt.test = new CValueExpression(result);
+        }
+        else if(auto stmt = cast(CDoWhileStatement) s)
+        {
+            int result = evalArithmetic(stmt.test);
+            stmt.test = new CValueExpression(result);
+        }
+        else if(auto stmt = cast(CForStatement) s)
+        {
+
+        }
     }
+    catch(CEvalException) {}
     return s;
 }
 CFunction!(Ts) resolveArithmetic(Ts...)(CFunction!(Ts) func)
