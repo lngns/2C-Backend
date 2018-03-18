@@ -115,6 +115,14 @@ int evalArithmetic(CExpression e)
             }
         }
     }
+    else if(auto expr = cast(CTernaryExpression) e)
+    {
+        Ternary res = evalToBool(expr.test);
+        if(res == Ternary.True)
+            return evalArithmetic(expr.then);
+        else if(res == Ternary.False)
+            return evalArithmetic(expr.otherwise);
+    }
     else if(auto expr = cast(CGroupingExpression) e)
     {
         return evalArithmetic(expr.expression);
@@ -122,9 +130,55 @@ int evalArithmetic(CExpression e)
     throw new CEvalException("Cannot evaluate this expression.");
 }
 
+CStatement simplifyBlock(CStatement s)
+{
+    if(auto stmt = cast(CBlockStatement) s)
+    {
+        if(stmt.body.length == 0)
+            return null;
+        else if(stmt.body.length == 1)
+        {
+            if(auto decl = cast(CDeclarationStatement) stmt.body[0])
+            {
+                if(decl.declaration.initializer !is null)
+                {
+                    if(auto init = cast(CCallExpression) decl.declaration.initializer)
+                        return new CExpressionStatement(init);
+                }
+                return null;
+            }
+            else if(auto inner = cast(CBlockStatement) stmt.body[0])
+            {
+                return simplifyBlock(inner);
+            }
+            return stmt.body[0];
+        }
+    }
+    return s;
+}
 CStatement eliminateDeadCode(CStatement s)
 {
-    if(auto stmt = cast(CIfStatement) s)
+    if(auto stmt = cast(CExtensionStatement) s)
+    {
+        return eliminateDeadCode(stmt.toCStatement());
+    }
+    else if(auto stmt = cast(CBlockStatement) s)
+    {
+        if(stmt.body.length == 0)
+            return null;
+        else if(stmt.body.length == 1)
+            return simplifyBlock(eliminateDeadCode(stmt.body[0]));
+        CStatement[] newbody;
+        foreach(ss; stmt.body)
+        {
+            auto optimized = simplifyBlock(eliminateDeadCode(ss));
+            if(optimized !is null)
+                newbody ~= optimized;
+        }
+        stmt.body = newbody;
+        return stmt;
+    }
+    else if(auto stmt = cast(CIfStatement) s)
     {
         Ternary tryBool = evalToBool(stmt.test);
         if(tryBool == Ternary.True)
@@ -137,7 +191,7 @@ CStatement eliminateDeadCode(CStatement s)
         int first = 0;
         foreach(i, ss; stmt.body.body)
         {
-            auto substmt = cast(CCaseStatement) ss;
+            auto substmt = cast(CLabelStatement) ss;
             if(substmt !is null)
                 break;
             ++first;
@@ -207,14 +261,23 @@ CStatement eliminateDeadCode(CStatement s)
         }
         catch(CEvalException) {}
     }
+    else if(auto stmt = cast(CExpressionStatement) s)
+    {
+        try
+        {
+            evalArithmetic(stmt.expr); //if it's evaluatable it doesn't have side-effects
+            return null;
+        }
+        catch(CEvalException) {}
+    }
     return s;
 }
-CFunction!(Ts) eliminateDeadCode(Ts...)(CFunction!(Ts) func)
+CFunction eliminateDeadCode(CFunction func)
 {
     CStatement[] newbody;
     foreach(i, stmt; func.body)
     {
-        auto optimized = eliminateDeadCode(stmt);
+        auto optimized = simplifyBlock(eliminateDeadCode(stmt));
         if(optimized !is null)
             newbody ~= optimized;
     }
@@ -238,28 +301,31 @@ CStatement resolveArithmetic(CStatement s)
         }
         else if(auto stmt = cast(CIfStatement) s)
         {
+            stmt.then = resolveArithmetic(stmt.then);
             int result = evalArithmetic(stmt.test);
             stmt.test = new CValueExpression(result);
         }
         else if(auto stmt = cast(CWhileStatement) s)
         {
+            stmt.body = resolveArithmetic(stmt.body);
             int result = evalArithmetic(stmt.test);
             stmt.test = new CValueExpression(result);
         }
         else if(auto stmt = cast(CDoWhileStatement) s)
         {
+            stmt.body = resolveArithmetic(stmt.body);
             int result = evalArithmetic(stmt.test);
             stmt.test = new CValueExpression(result);
         }
         else if(auto stmt = cast(CForStatement) s)
         {
-
+            stmt.body = resolveArithmetic(stmt.body);
         }
     }
     catch(CEvalException) {}
     return s;
 }
-CFunction!(Ts) resolveArithmetic(Ts...)(CFunction!(Ts) func)
+CFunction resolveArithmetic(CFunction func)
 {
     foreach(i, stmt; func.body)
         func.body[i] = resolveArithmetic(stmt);

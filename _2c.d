@@ -50,6 +50,14 @@ public:
 alias CGCCAttributeEmitter = basicAttributeEmitterBuilder!("__attribute__((", "))");
 alias CMSVCAttributeEmitter = basicAttributeEmitterBuilder!("__declspec(", ")");
 
+class CAstException : Exception
+{
+    this(lazy string message)
+    {
+        super(message);
+    }
+}
+
 interface CNode { string toString(); }
 interface CUpperNode : CNode { string toString(const CModule); }
 class CAttribute { string name; string[] arguments; }
@@ -65,15 +73,46 @@ class CModule
         name = n;
         attributeEmitter = attrman;
     }
-    void opOpAssign(string s)(CUpperNode node) if(s == "~")
+    CModule opOpAssign(string s)(CUpperNode node) if(s == "~")
     {
         tree ~= node;
+        return this;
     }
     override string toString()
     {
         string buffer = "";
         foreach(node; tree)
-            buffer ~= node.toString(this) ~ ";\r\n";
+            buffer ~= node.toString(this) ~ (!cast(CCppDirective) node ? ";\r\n" : "\r\n");
+        return buffer;
+    }
+}
+class CExtensionDeclaration : CUpperNode
+{
+    abstract CUpperNode toCUpperNode();
+    final override string toString(const CModule m)
+    {
+        return toCUpperNode().toString(m);
+    }
+}
+class CMultipleUpperNodes : CUpperNode
+{
+    CUpperNode[] body;
+
+    this() {}
+    this(CUpperNode[] segment...)
+    {
+        body = segment;
+    }
+    CMultipleUpperNodes opOpAssign(string s)(CUpperNode stmt) if(s == "~")
+    {
+        body ~= stmt;
+        return this;
+    }
+    override string toString(const CModule m)
+    {
+        string buffer;
+        foreach(node; body)
+            buffer ~= node.toString(m) ~ (!cast(CCppDirective) node ? ";\r\n" : "\r\n");
         return buffer;
     }
 }
@@ -92,31 +131,34 @@ class CCppDirective : CUpperNode
         return "#" ~ directive ~ " " ~ args;
     }
 }
-class CFunction(Ret, Args...) : CUpperNode
+class CFunction : CUpperNode
 {
     string name;
-    string[Args.length] args;
+    CType returnType;
     CStatement[] body;
+    CValueDeclaration[] parameters;
 
-    this(string n, string[Args.length] a...)
+    this(string n, CType ret, CValueDeclaration[] params...)
     {
         name = n;
-        args[] = a;
+        returnType = ret;
+        parameters[] = params;
     }
-    void opOpAssign(string s)(CStatement node) if(s == "~")
+    CFunction opOpAssign(string s)(CStatement node) if(s == "~")
     {
         body ~= node;
+        return this;
     }
     override string toString(const CModule m)
     {
-        string buffer = Ret.stringof ~ " " ~ name ~ "(";
-        static if(Args.length == 0)
+        string buffer = returnType.toString() ~ " " ~ name ~ "(";
+        if(parameters.length == 0)
             buffer ~= "void";
         else
         {
-            buffer ~= Args[0].stringof ~ " " ~ args[0];
-            static foreach(i; 1..Args.length)
-                buffer ~= ", " ~ Args[i].stringof ~ " " ~ args[i];
+            buffer ~= parameters[0].toString(m);
+            foreach(param; parameters[1..$])
+                buffer ~= ", " ~ param.toString(m);
         }
         buffer ~= ")\r\n{\r\n";
         foreach(node; body)
@@ -131,7 +173,7 @@ class CFunction(Ret, Args...) : CUpperNode
     }
 }
 enum CStorageClass { Auto, Static, Register, Extern }
-class CVariableDeclaration : CUpperNode
+class CValueDeclaration : CUpperNode
 {
     CType type;
     string identifier;
@@ -149,38 +191,86 @@ class CVariableDeclaration : CUpperNode
     }
     string toString(const CModule m)
     {
-        string buffer = "";
-        if(m.attributeEmitter !is null)
+        string buffer;
+        if(m.attributeEmitter !is null && attributes !is null)
             buffer ~= m.attributeEmitter(attributes) ~ " ";
         buffer ~= enumToString(storageClass).toLower() ~ " ";
-        if(cast(CBasicType) type || cast(CUnresolvedType) type)
-            buffer ~= type.toString() ~ " " ~ identifier;
-        if(auto arrtype = cast(CArrayType) type)
-            buffer ~= arrtype.underliningType.toString() ~ " " ~ identifier ~ "[" ~ (arrtype.length ? to!string(arrtype.length) : "*" ) ~ "]";
+        CType t = type;
+        if(auto tt = cast(CExtensionType) type)
+            t = tt.toCType();
+        if(auto fptype = cast(CFunctionPointerType) t)
+        {
+            buffer ~= fptype.returnType.toString() ~ "(" ~ (fptype.qualifier != CQualifier.None ? enumToString(fptype.qualifier).toLower() ~ "* " : "*") ~ identifier ~ ")(";
+            if(fptype.argumentsTypes.length == 0)
+                buffer ~= "void)";
+            else
+            {
+                buffer ~= fptype.argumentsTypes[0].toString();
+                foreach(CType tt; fptype.argumentsTypes[1..$])
+                    buffer ~= ", " ~ tt.toString();
+                buffer ~= ")";
+            }
+        }
+        else
+        {
+            if(type.qualifier != CQualifier.None)
+                buffer ~= enumToString(type.qualifier).toLower() ~ " ";
+            if(cast(CBasicType) t || cast(CPointerType) t || cast(CRemoteStructType) t)
+                buffer ~= t.toString() ~ " " ~ identifier;
+            else if(auto arrtype = cast(CArrayType) t)
+                buffer ~= arrtype.underliningType.toString() ~ " " ~ identifier ~ "[" ~ (arrtype.length ? to!string(arrtype.length) : "*" ) ~ "]";
+        }
         return buffer ~ (initializer !is null ? " = " ~ initializer.toString() : "");
     }
 }
-class CConstantDeclaration : CVariableDeclaration
+enum CAggregateKind { Struct, Enum }
+class CAggregateDeclaration : CUpperNode
 {
-    this(CType t, string id, CExpression init = null, CStorageClass cl = CStorageClass.Auto, CAttribute[] attrs = null)
+    private uint indent = 0;
+
+    string identifier;
+    CAggregateKind kind;
+    CUpperNode[] members;
+    CAttribute[] attributes;
+
+    this(CAggregateKind k, string i = null, CUpperNode[] m = null, CAttribute[] a = null)
     {
-        super(t, id, init, cl, attrs);
+        identifier = i;
+        members = m;
+        attributes = a;
+        kind = k;
+    }
+    uint setIndent(uint i)
+    {
+        return indent = i;
     }
     override string toString(const CModule m)
     {
         string buffer = "";
         if(m.attributeEmitter !is null)
             buffer ~= m.attributeEmitter(attributes) ~ " ";
-        buffer ~= enumToString(storageClass).toLower() ~ " const ";
-        if(cast(CBasicType) type)
-            buffer ~= type.toString() ~ " " ~ identifier;
-        if(auto arrtype = cast(CArrayType) type)
-            buffer ~= arrtype.underliningType.toString() ~ " " ~ identifier ~ "[" ~ (arrtype.length ? to!string(arrtype.length) : "*" ) ~ "]";
-        return buffer ~ (initializer !is null ? " = " ~ initializer.toString() : "");
+        buffer ~= enumToString(kind).toLower() ~ " " ~ (identifier !is null ? identifier ~ " " : "") ~ "\r\n" ~ strTimes(" ", indent) ~ "{\r\n";
+        foreach(member; members)
+        {
+            if(!cast(CCppDirective) member)
+                buffer ~= strTimes(" ", indent);
+            if(auto mem = cast(CAggregateDeclaration) member)
+                mem.setIndent(indent + 4);
+            buffer ~= member.toString(m) ~ "\r\n";
+        }
+        return buffer ~ strTimes(" ", indent) ~ "}";
     }
 }
 
 interface CStatement : CNode { string toString(uint, const CModule); }
+class CExtensionStatement : CStatement
+{
+    abstract CStatement toCStatement();
+    final override string toString(uint i, const CModule m)
+    {
+        return toCStatement().toString(i, m);
+    }
+}
 class CNullStatement : CStatement
 {
     override string toString(uint, const CModule)
@@ -190,9 +280,9 @@ class CNullStatement : CStatement
 }
 class CDeclarationStatement : CStatement
 {
-    CVariableDeclaration declaration;
+    CValueDeclaration declaration;
 
-    this(CVariableDeclaration decl)
+    this(CValueDeclaration decl)
     {
         declaration = decl;
     }
@@ -211,9 +301,14 @@ class CBlockStatement : CStatement
         body = new CStatement[tree.length];
         body[] = tree;
     }
-    void opOpAssign(string s)(CStatement stmt) if(s == "~")
+    CBlockStatement opOpAssign(string s)(CStatement stmt) if(s == "~")
     {
         body ~= stmt;
+        return this;
+    }
+    CBlockStatement opBinary(string s)(CStatement stmt) if(s == "~")
+    {
+        return new CBlockStatement(body ~ stmt);
     }
     string toString(uint indent, const CModule m)
     {
@@ -306,10 +401,10 @@ class CDoWhileStatement : CStatement
     {
         string buffer = "do\r\n";
         if(cast(CBlockStatement) body)
-            buffer ~= strTimes(" ", indent) ~ body.toString(indent, m);
+            buffer ~= strTimes(" ", indent) ~ body.toString(indent, m) ~ " ";
         else
-            buffer ~= strTimes(" ", indent + 4) ~ body.toString(indent + 4, m);
-        buffer ~= "\r\n" ~ strTimes(" ", indent) ~ "while(" ~ test.toString() ~ ");";
+            buffer ~= strTimes(" ", indent + 4) ~ body.toString(indent + 4, m) ~ "\r\n" ~ strTimes(" ", indent);
+        buffer ~= "while(" ~ test.toString() ~ ");";
         return buffer;
     }
 }
@@ -329,7 +424,7 @@ class CForStatement : CStatement
     }
     override string toString(uint indent, const CModule m)
     {
-        string buffer = "for(" ~ init.toString() ~ "; " ~ test.toString() ~ "; " ~ incr.toString() ~ ")\r\n";
+        string buffer = "for(" ~ (init !is null ? init.toString() : "") ~ "; " ~ (test !is null ? test.toString() : "") ~ "; " ~ (incr !is null ? incr.toString() : "") ~ ")\r\n";
         if(cast(CBlockStatement) body)
             buffer ~= strTimes(" ", indent) ~ body.toString(indent, m);
         else
@@ -433,6 +528,14 @@ class CBreakStatement : CStatement
 }
 
 interface CExpression : CNode {}
+class CExtensionExpression : CExpression
+{
+    abstract CExpression toCExpression();
+    final override string toString()
+    {
+        return toCExpression().toString();
+    }
+}
 class CValueExpression : CExpression
 {
     string representation;
@@ -456,11 +559,15 @@ class CUnaryExpression : CExpression
     string operator;
     bool suffix;
 
-    this(CExpression expr, string op, bool s = false)
+    this(CExpression expr, string op, bool s = true)
     {
         operand = expr;
         operator = op;
         suffix = s;
+    }
+    this(string op, CExpression expr, bool s = false)
+    {
+        this(expr, op, s);
     }
     override string toString()
     {
@@ -636,54 +743,52 @@ class CCastExpression : CExpression
         return "(" ~ type.toString() ~ ") " ~ operand.toString();
     }
 }
-class CAssignmentExpression : CExpression
+class CAssignmentExpression : CBinaryExpression
 {
     CExpression left, right;
 
     this(CExpression lhs, CExpression rhs)
     {
-        left = lhs;
-        right = rhs;
-    }
-    override string toString()
-    {
-        return left.toString() ~ " = " ~ right.toString();
-    }
-}
-class CCompoundAssignmentExpression : CAssignmentExpression
-{
-    string operator;
-
-    this(CExpression lhs, string operator, CExpression rhs)
-    {
-        super(lhs, rhs);
-    }
-    override string toString()
-    {
-        return left.toString ~ " " ~ operator ~ "= " ~ right.toString();
-    }
-}
-class CEqualityExpression : CCompoundAssignmentExpression
-{
-    this(CExpression lhs, CExpression rhs)
-    {
         super(lhs, "=", rhs);
     }
 }
-class CInequalityExpression : CCompoundAssignmentExpression
+class CCompoundAssignmentExpression : CBinaryExpression
+{
+    this(CExpression lhs, string operator, CExpression rhs)
+    {
+        super(lhs, operator ~ "=", rhs);
+    }
+}
+class CEqualityExpression : CBinaryExpression
 {
     this(CExpression lhs, CExpression rhs)
     {
-        super(lhs, "!", rhs);
+        super(lhs, "==", rhs);
+    }
+}
+class CInequalityExpression : CBinaryExpression
+{
+    this(CExpression lhs, CExpression rhs)
+    {
+        super(lhs, "!=", rhs);
     }
 }
 
-interface CType
+enum CQualifier { Const, Volatile, Restrict, None }
+class CType
 {
-    string toString();
+    CQualifier qualifier = CQualifier.None;
+    abstract override string toString();
 }
-class CUnresolvedType : CType { override string toString() { return "UNRESOLVED_TYPE"; } }
-enum CBType { Int, UInt, Short, UShort, Char, UChar, Long, ULong, LongLong, ULongLong, Float, UFloat, Double, UDouble }
+class CExtensionType : CType
+{
+    abstract CType toCType();
+    override string toString()
+    {
+        return toCType().toString();
+    }
+}
+enum CBType { Void, Int, UInt, Short, UShort, Char, UChar, Long, ULong, LongLong, ULongLong, Float, UFloat, Double, UDouble }
 class CBasicType : CType
 {
     CBType type;
@@ -691,6 +796,11 @@ class CBasicType : CType
     this(CBType t)
     {
         type = t;
+    }
+    this(CQualifier q, CBType t)
+    {
+        type = t;
+        qualifier = q;
     }
     override string toString()
     {
@@ -714,8 +824,85 @@ class CArrayType : CType
         underliningType = type;
         length = len;
     }
+    this(CQualifier q, CType type, uint len = 0)
+    {
+        underliningType = type;
+        qualifier = q;
+        length = len;
+    }
     override string toString()
     {
-        return underliningType.toString ~ "[" ~ (length ? to!string(length) : "*") ~ "]";
+        return underliningType.toString ~ "[" ~ (length ? to!string(length) : "") ~ "]";
+    }
+}
+class CPointerType : CType
+{
+    CType underliningType;
+
+    this(CType type)
+    {
+        underliningType = type;
+    }
+    this(CQualifier q, CType type)
+    {
+        underliningType = type;
+        qualifier = q;
+    }
+    override string toString()
+    {
+        return underliningType.toString() ~ "*";
+    }
+}
+class CFunctionPointerType : CType
+{
+    CType returnType;
+    CType[] argumentsTypes;
+
+    this(CType ret, CType[] args...)
+    {
+        returnType = ret;
+        argumentsTypes = args;
+    }
+    this(CQualifier q, CType ret, CType[] args...)
+    {
+        qualifier = q;
+        returnType = ret;
+        argumentsTypes = args;
+    }
+    override string toString()
+    {
+        string buffer = returnType.toString() ~ "(" ~ (qualifier != CQualifier.None ? enumToString(qualifier).toLower() : "") ~ "*)(";
+        if(argumentsTypes.length == 0)
+            return buffer ~ "void)";
+        buffer ~= argumentsTypes[0].toString();
+        foreach(CType t; argumentsTypes[1..$])
+            buffer ~= ", " ~ t.toString();
+        return buffer ~ ")";
+    }
+}
+class CRemoteStructType : CType
+{
+    string identifier;
+
+    this(string id)
+    {
+        identifier = id;
+    }
+    override string toString()
+    {
+        return "struct " ~ identifier;
+    }
+}
+class CRemoteEnumType : CType
+{
+    string identifier;
+
+    this(string id)
+    {
+        identifier = id;
+    }
+    override string toString()
+    {
+        return "enum " ~ identifier;
     }
 }

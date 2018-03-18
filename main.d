@@ -8,7 +8,7 @@ void main()
     auto m = new CModule("HelloWorld");
     m ~= new CCppDirective("include", "<stdio.h>");
 
-    auto cmain = new CFunction!int("main");
+    auto cmain = new CFunction("main", new CBasicType(CBType.Int));
     cmain ~= new CIfStatement(
         new CValueExpression("true"),
         new CExpressionStatement(
@@ -26,8 +26,8 @@ void main()
     );
     cmain ~= new CIfStatement(
         new CUnaryExpression(
-            new CValueExpression("1"),
-            "--"
+            "--",
+            new CValueExpression("1")
         ),
         new CExpressionStatement(
             new CCallExpression(
@@ -209,12 +209,13 @@ void main()
     writeln("\r\n\r\n-----------\r\n");
 
     CModule m2 = new CModule("DeclarationTest", &CGCCAttributeEmitter);
-    m2 ~= new CVariableDeclaration(new CBasicType(CBType.UInt), "foo");
+    m2 ~= new CValueDeclaration(new CBasicType(CBType.UInt), "foo");
 
-    auto func = new CFunction!void("func");
-    func ~= new CDeclarationStatement(new CConstantDeclaration(new CBasicType(CBType.ULongLong), "bar", null, CStorageClass.Static));
+    auto func = new CFunction("func", new CBasicType(CBType.Int));
+    func ~= new CDeclarationStatement(new CValueDeclaration(new CBasicType(CQualifier.Const, CBType.ULongLong), "bar", null, CStorageClass.Static));
+    func ~= new CDeclarationStatement(new CValueDeclaration(new CPointerType(new CBasicType(CBType.Void)), "baz"));
+    func ~= new CDeclarationStatement(new CValueDeclaration(new CFunctionPointerType(CQualifier.Const, new CBasicType(CBType.Int), new CBasicType(CBType.Int), new CBasicType(CBType.Int)), "qux"));
 
     m2 ~= func;
     writeln(m2);
 }
-
