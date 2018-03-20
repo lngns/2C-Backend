@@ -226,5 +226,5 @@ void main()
     m2 ~= func;
     writeln(m2);
 
-    writeln("\r\n\r\n-----------\r\n");
+    writeln("\r\n\r\n-----------\r\n"); /* aDAWEY */
 }
