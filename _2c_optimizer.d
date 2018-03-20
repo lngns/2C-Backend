@@ -263,9 +263,17 @@ CStatement eliminateDeadCode(CStatement s)
     }
     else if(auto stmt = cast(CExpressionStatement) s)
     {
+        if(auto expr = cast(CTernaryExpression) stmt.expr)
+        {
+            Ternary res = evalToBool(expr.test);
+            if(res == Ternary.True)
+                stmt.expr = expr.then;
+            else if(res == Ternary.False)
+                stmt.expr = expr.otherwise;
+        }
         try
         {
-            evalArithmetic(stmt.expr); //if it's evaluatable it doesn't have side-effects
+            evalArithmetic(stmt.expr); //if it's evaluatable it doesn't have side-effects, so we can remove it
             return null;
         }
         catch(CEvalException) {}

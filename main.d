@@ -194,6 +194,13 @@ void main()
             )
         )
     );
+    cmain ~= new CExpressionStatement(
+        new CTernaryExpression(
+            new CValueExpression("true"),
+            new CCallExpression(new CValueExpression("A")),
+            new CCallExpression(new CValueExpression("B"))
+        )
+    );
     m ~= cmain;
 
     writeln("Unoptimized Code:\r\n");
@@ -218,4 +225,41 @@ void main()
 
     m2 ~= func;
     writeln(m2);
+
+    writeln("\r\n\r\n-----------\r\n");
+    {
+        import translations.platinum;
+
+        auto m3 = new PltModule("PlatinumTest");
+        auto f = new CFunction("PltMain", new CBasicType(CBType.Void));
+        auto cl = new PltClassType("Foo");
+
+        f ~= new PltConstIfStatement(
+            new CValueExpression("true"),
+            new CExpressionStatement(
+                new CCallExpression(
+                    new CValueExpression("A")
+                )
+            ),
+            new CExpressionStatement(
+                new CCallExpression(
+                    new CValueExpression("B")
+                )
+            )
+        );
+        f ~= new CDeclarationStatement(
+            new CValueDeclaration(
+                cl,
+                "foo"
+            )
+        );
+        f ~= new CDeclarationStatement(
+            new CValueDeclaration(
+                cl,
+                "bar"
+            )
+        );
+        m3 ~= f;
+        //writeln(m3);
+    }
 }
