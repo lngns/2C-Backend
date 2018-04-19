@@ -282,12 +282,19 @@ CStatement eliminateDeadCode(CStatement s)
 }
 CFunction eliminateDeadCode(CFunction func)
 {
-    CStatement[] newbody;
+    import std.variant;
+
+    Algebraic!(CStatement, CCppDirective)[] newbody;
     foreach(i, stmt; func.body)
     {
-        auto optimized = simplifyBlock(eliminateDeadCode(stmt));
-        if(optimized !is null)
-            newbody ~= optimized;
+        if(stmt.peek!CStatement)
+        {
+            auto optimized = simplifyBlock(eliminateDeadCode(stmt.get!CStatement));
+            if(optimized !is null)
+                newbody ~= Algebraic!(CStatement, CCppDirective)(optimized);
+        }
+        else
+            newbody ~= Algebraic!(CStatement, CCppDirective)(stmt.get!CCppDirective);
     }
     func.body = newbody;
     return func;
@@ -336,6 +343,11 @@ CStatement resolveArithmetic(CStatement s)
 CFunction resolveArithmetic(CFunction func)
 {
     foreach(i, stmt; func.body)
-        func.body[i] = resolveArithmetic(stmt);
+    {
+        if(stmt.peek!CStatement)
+            func.body[i] = resolveArithmetic(stmt.get!CStatement);
+        else
+            func.body[i] = stmt.get!CCppDirective;
+    }
     return func;
 }

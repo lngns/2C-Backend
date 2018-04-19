@@ -67,11 +67,13 @@ class CModule
     CUpperNode[] tree;
     string name;
     CAttributeEmitter attributeEmitter;
+    bool computedGotoWarning;
 
     this(string n, CAttributeEmitter attrman = null)
     {
         name = n;
         attributeEmitter = attrman;
+        computedGotoWarning = true;
     }
     CModule opOpAssign(string s)(CUpperNode node) if(s == "~")
     {
@@ -133,9 +135,11 @@ class CCppDirective : CUpperNode
 }
 class CFunction : CUpperNode
 {
+    import std.variant;
+
     string name;
     CType returnType;
-    CStatement[] body;
+    Algebraic!(CStatement, CCppDirective)[] body;
     CValueDeclaration[] parameters;
 
     this(string n, CType ret, CValueDeclaration[] params...)
@@ -145,6 +149,11 @@ class CFunction : CUpperNode
         parameters[] = params;
     }
     CFunction opOpAssign(string s)(CStatement node) if(s == "~")
+    {
+        body ~= Algebraic!(CStatement, CCppDirective)(node);
+        return this;
+    }
+    CFunction opOpAssign(string s)(CCppDirective node) if(s == "~")
     {
         body ~= node;
         return this;
@@ -163,10 +172,19 @@ class CFunction : CUpperNode
         buffer ~= ")\r\n{\r\n";
         foreach(node; body)
         {
-            if(cast(CLabelStatement) node)
-                buffer ~= node.toString(4, m) ~ "\r\n";
-            else
-                buffer ~= "    " ~ node.toString(4, m) ~ "\r\n";
+            if(node.peek!CStatement)
+            {
+                auto n = node.get!CStatement;
+                if(cast(CLabelStatement) n)
+                    buffer ~= n.toString(4, m) ~ "\r\n";
+                else
+                    buffer ~= "    " ~ n.toString(4, m) ~ "\r\n";
+            }
+            else if(node.peek!CCppDirective)
+            {
+                auto n = node.get!CCppDirective;
+                buffer ~= n.toString(m) ~ "\r\n";
+            }
         }
         buffer ~= "}";
         return buffer;
@@ -200,7 +218,7 @@ class CValueDeclaration : CUpperNode
             t = tt.toCType();
         if(auto fptype = cast(CFunctionPointerType) t)
         {
-            buffer ~= fptype.returnType.toString() ~ "(" ~ (fptype.qualifier != CQualifier.None ? enumToString(fptype.qualifier).toLower() ~ "* " : "*") ~ identifier ~ ")(";
+            buffer ~= fptype.returnType.toString() ~ "(*" ~ (fptype.qualifier != CQualifier.None ? enumToString(fptype.qualifier).toLower() ~ " " : "") ~ identifier ~ ")(";
             if(fptype.argumentsTypes.length == 0)
                 buffer ~= "void)";
             else
@@ -218,7 +236,7 @@ class CValueDeclaration : CUpperNode
             if(cast(CBasicType) t || cast(CPointerType) t || cast(CRemoteStructType) t)
                 buffer ~= t.toString() ~ " " ~ identifier;
             else if(auto arrtype = cast(CArrayType) t)
-                buffer ~= arrtype.underliningType.toString() ~ " " ~ identifier ~ "[" ~ (arrtype.length ? to!string(arrtype.length) : "*" ) ~ "]";
+                buffer ~= arrtype.underliningType.toString() ~ " " ~ identifier ~ "[" ~ (arrtype.length ? to!string(arrtype.length) : "*") ~ "]";
         }
         return buffer ~ (initializer !is null ? " = " ~ initializer.toString() : "");
     }
@@ -486,7 +504,7 @@ class CDefaultStatement : CLabelStatement
         super("default", stmt);
     }
 }
-class CGotoStatment : CStatement
+class CGotoStatement : CStatement
 {
     string label;
 
@@ -497,6 +515,21 @@ class CGotoStatment : CStatement
     override string toString(uint, const CModule)
     {
         return "goto " ~ label ~ ";";
+    }
+}
+class CComputedGotoStatement : CStatement
+{
+    CExpression expr;
+
+    this(CExpression e)
+    {
+        expr = e;
+    }
+    override string toString(uint, const CModule m)
+    {
+        if(m.attributeEmitter != &CGCCAttributeEmitter && m.computedGotoWarning)
+            writeln("[WARNING] Computed Gotos require GCC.");
+        return "goto *(" ~ expr.toString() ~ ");";
     }
 }
 class CReturnStatement : CStatement
